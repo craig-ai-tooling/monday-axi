@@ -9,17 +9,39 @@ the notification emails, not in the board share links — so correcting items fr
 outside was guesswork.
 
 ```
-pip install nothing        # stdlib only, Python 3.9+
+pip install nothing        # stdlib only, Python 3.10+
 ```
 
 ## Install
 
-```bash
-git clone git@github.com:craig-ai-tooling/monday-axi.git ~/code/monday-axi
-ln -s ~/code/monday-axi/monday-axi ~/bin/monday-axi
+### Download the binary (recommended)
+
+Pull the latest single-file build onto your `PATH` — just `curl`, `chmod`, `mv`. No `gh`,
+no token, no dependencies:
+
+```sh
+curl -fsSL https://github.com/craig-ai-tooling/monday-axi/releases/latest/download/monday-axi.pyz -o monday-axi
+chmod +x monday-axi
+mv monday-axi ~/.local/bin/monday-axi        # or anywhere on your PATH
 ```
 
-## Auth
+Or run the bundled installer (same three steps, honours `$BIN` for the target path):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/craig-ai-tooling/monday-axi/main/scripts/install.sh | bash
+```
+
+`monday-axi.pyz` is a zipapp — it needs a Python 3.10+ interpreter on the target (every lab
+box has one), not a compiled binary.
+
+### From a checkout
+
+```bash
+git clone git@github.com:craig-ai-tooling/monday-axi.git ~/code/monday-axi
+python -m pip install -e ".[dev]"     # or: make build && make install
+```
+
+## Configure
 
 A monday.com API token, read from 1Password by default:
 
@@ -31,12 +53,14 @@ export MONDAY_TOKEN=...                  # or supply it directly
 Mint one from your monday avatar → **Developers** → **My access tokens**. The token acts
 as *you*: everything it writes is attributed to your user.
 
-| variable | default | meaning |
+| variable | default | required |
 |---|---|---|
-| `MONDAY_BOARD` | `18424958790` | board id |
-| `MONDAY_SA` | `Craig Smith` | name matched against the board's people column |
-| `MONDAY_TOKEN` | — | bypass 1Password |
-| `MONDAY_OP_REF` | `op://Lobster/monday.com/API Key` | 1Password item path |
+| `MONDAY_BOARD` | `18424958790` | no |
+| `MONDAY_SA` | `Craig Smith` | no |
+| `MONDAY_TOKEN` | — | no — bypasses 1Password when set |
+| `MONDAY_OP_REF` | `op://Lobster/monday.com/API Key` | only if `MONDAY_TOKEN` is unset |
+
+`monday-axi doctor` tells you what is still missing.
 
 ## Commands
 
@@ -50,6 +74,7 @@ monday-axi put <id> --status --activity --date --note [--dry-run]
 monday-axi delete <id> --yes
 monday-axi apply <tsv> [--dry-run]  batch write, whole file validated first
 monday-axi whoami
+monday-axi doctor [--json]          check 1Password + monday.com API connectivity
 ```
 
 No arguments is `mine`, so the bare command prints live data.
@@ -64,6 +89,27 @@ write goes out**, so a typo on line 9 cannot leave lines 1–8 half-applied.
 12970524528	Done	PoV		# status and activity
 12969237488		Check-in	# activity only, leave status alone
 ```
+
+### doctor
+
+Checks every connector this tool depends on — 1Password and the monday.com API — and
+prints a TOON table (or `--json`) naming the exact fix for anything that's down:
+
+```
+$ monday-axi doctor
+connectors[2]{name,need,status,detail}:
+  onepassword,required,ok,"op on PATH — op://Lobster/monday.com/API Key readable"
+  monday-api,required,ok,"authenticated as Craig Smith"
+config[4]{var,value,source}:
+  MONDAY_BOARD,18424958790,default
+  MONDAY_SA,Craig Smith,default
+  MONDAY_TOKEN,(unset),-
+  MONDAY_OP_REF,op://Lobster/monday.com/API Key,default
+```
+
+Exits `0` only when every required connector is `ok`; exits `1` if any required connector
+is `down` or `absent`. 1Password drops to `optional`/`skip` once `MONDAY_TOKEN` is set.
+`doctor` never crashes on a broken environment — that's the whole point of running it.
 
 ## What the SA Weekly Activity Board offers
 
