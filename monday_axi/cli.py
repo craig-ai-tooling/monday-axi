@@ -10,12 +10,16 @@ picklists and refuses anything else (exit 4), and `delete` demands --yes.
 The board is team-visible and owned by JV — treat a write as outward-facing.
 
 Env overrides: MONDAY_BOARD, MONDAY_TOKEN, MONDAY_OP_REF, MONDAY_SA
+
+Run `monday-axi doctor` to check whether 1Password and the monday.com API
+are reachable before doing anything else.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -418,7 +422,128 @@ def cmd_whoami(a) -> int:
     return E_OK
 
 
-def main() -> int:
+# ── doctor ─────────────────────────────────────────────────────────────────
+# One table, in code, of every external connector this tool depends on. Each
+# probe returns (need, status, detail) and must never raise — a probe that
+# blows up is caught by cmd_doctor and rendered as a "down" row instead of a
+# traceback, because reporting a broken connector is the whole point of
+# running doctor in the first place.
+#
+#   need   : "required" or "optional" (may depend on the current env, e.g.
+#            1Password is optional once MONDAY_TOKEN is set)
+#   status : "ok", "down", "absent", or "skip"
+#   detail : human text. Every down/absent/skip row names the exact command
+#            or env var that fixes it.
+
+def _probe_onepassword() -> tuple[str, str, str]:
+    if os.environ.get("MONDAY_TOKEN", "").strip():
+        return "optional", "skip", "MONDAY_TOKEN is set — 1Password is not used"
+    if not shutil.which("op"):
+        return "required", "absent", (
+            "op CLI not found on PATH — install the 1Password CLI, "
+            "or set MONDAY_TOKEN to bypass it")
+    try:
+        out = subprocess.run(["op", "read", OP_REF], capture_output=True,
+                             text=True, timeout=30)
+    except Exception as e:  # noqa: BLE001 — a probe must never raise
+        return "required", "down", f"`op read {OP_REF}` failed to run: {e}"
+    if out.returncode != 0 or not out.stdout.strip():
+        return "required", "down", (
+            f"`op read {OP_REF}` failed — run `op signin`, or fix MONDAY_OP_REF "
+            f"(currently {OP_REF!r}): {out.stderr.strip()[:150]}")
+    return "required", "ok", f"op on PATH — {OP_REF} readable"
+
+
+def _probe_monday_api() -> tuple[str, str, str]:
+    tok = os.environ.get("MONDAY_TOKEN", "").strip()
+    if not tok:
+        if not shutil.which("op"):
+            return "required", "down", (
+                "no token available — set MONDAY_TOKEN, or install the "
+                "1Password CLI (see the onepassword row)")
+        try:
+            out = subprocess.run(["op", "read", OP_REF], capture_output=True,
+                                 text=True, timeout=30)
+        except Exception as e:  # noqa: BLE001
+            return "required", "down", f"no token available — `op read {OP_REF}` failed: {e}"
+        if out.returncode != 0 or not out.stdout.strip():
+            return "required", "down", (
+                "no token available — fix 1Password (see the onepassword row), "
+                "or set MONDAY_TOKEN directly")
+        tok = out.stdout.strip()
+    body = json.dumps({"query": "{ me { name } }"}).encode()
+    req = urllib.request.Request(
+        ENDPOINT, data=body,
+        headers={"Authorization": tok, "Content-Type": "application/json",
+                 "API-Version": API_VERSION})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            payload = json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = e.read()[:200].decode("utf8", "replace")
+        if e.code == 401:
+            return "required", "down", (
+                "401 from api.monday.com — token rejected; mint a new one at "
+                "monday avatar -> Developers -> My access tokens, then set "
+                "MONDAY_TOKEN or update the MONDAY_OP_REF item")
+        return "required", "down", f"{e.code} from api.monday.com — {detail}"
+    except urllib.error.URLError as e:
+        return "required", "down", f"api.monday.com unreachable — {e.reason}; check network/DNS"
+    except Exception as e:  # noqa: BLE001 — a probe must never raise
+        return "required", "down", f"unexpected error probing monday-api: {e}"
+    if "errors" in payload:
+        msg = "; ".join(str(x.get("message", x)) for x in payload.get("errors", []))
+        return "required", "down", f"monday API error: {msg}"
+    name = (payload.get("data") or {}).get("me", {}).get("name", "?")
+    return "required", "ok", f"authenticated as {name}"
+
+
+CONNECTORS: list[tuple[str, object]] = [
+    ("onepassword", _probe_onepassword),
+    ("monday-api", _probe_monday_api),
+]
+
+
+def cmd_doctor(a) -> int:
+    rows = []
+    exit_code = E_OK
+    for name, probe in CONNECTORS:
+        try:
+            need, status, detail = probe()
+        except Exception as e:  # noqa: BLE001 — probing is the whole job
+            need, status, detail = "required", "down", f"probe crashed: {e}"
+        rows.append({"name": name, "need": need, "status": status, "detail": detail})
+        if need == "required" and status != "ok":
+            exit_code = E_ERR
+
+    config = [
+        {"var": "MONDAY_BOARD", "value": BOARD,
+         "source": "env" if os.environ.get("MONDAY_BOARD") else "default"},
+        {"var": "MONDAY_SA", "value": SA,
+         "source": "env" if os.environ.get("MONDAY_SA") else "default"},
+        {"var": "MONDAY_TOKEN", "value": "set" if os.environ.get("MONDAY_TOKEN") else "(unset)",
+         "source": "env" if os.environ.get("MONDAY_TOKEN") else "-"},
+        {"var": "MONDAY_OP_REF", "value": OP_REF,
+         "source": "env" if os.environ.get("MONDAY_OP_REF") else "default"},
+    ]
+
+    if getattr(a, "json", False):
+        print(json.dumps({"connectors": rows, "config": config}, indent=2))
+    else:
+        toon("connectors", [[r["name"], r["need"], r["status"], r["detail"]] for r in rows],
+             ["name", "need", "status", "detail"])
+        print()
+        toon("config", [[r["var"], r["value"], r["source"]] for r in config],
+             ["var", "value", "source"])
+        print()
+        if exit_code == E_OK:
+            print("all required connectors ok")
+        else:
+            print("next: fix the detail column above on every down/absent row, then rerun")
+    return exit_code
+
+
+def main() -> None:
     p = argparse.ArgumentParser(
         prog="monday-axi",
         description="agent-ergonomic CLI over the monday.com SA Weekly Activity Board")
@@ -468,15 +593,24 @@ def main() -> int:
 
     sub.add_parser("whoami", help="who the token authenticates as")
 
+    doc = sub.add_parser("doctor", help="check 1Password + monday.com API connectivity")
+    doc.add_argument("--json", action="store_true", help="emit JSON instead of TOON")
+
     ns = p.parse_args()
     table = {"board": cmd_board, "mine": cmd_mine, "items": cmd_items,
              "dupes": cmd_dupes, "put": cmd_put, "create": cmd_create,
-             "delete": cmd_delete, "apply": cmd_apply, "whoami": cmd_whoami}
-    return table[ns.cmd or "mine"](ns)   # content-first: no args = live data
+             "delete": cmd_delete, "apply": cmd_apply, "whoami": cmd_whoami,
+             "doctor": cmd_doctor}
+    # main() calls sys.exit itself, rather than just returning a code, because
+    # the zipapp -m entry point (`module.fn()`) discards main()'s return value
+    # — only sys.exit inside main() reaches the process exit code from every
+    # entry point (direct script, `python -m monday_axi`, console_script, and
+    # the .pyz).
+    try:
+        sys.exit(table[ns.cmd or "mine"](ns))   # content-first: no args = live data
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        sys.exit(130)
+    main()
