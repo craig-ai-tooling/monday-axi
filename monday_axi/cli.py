@@ -25,13 +25,14 @@ import sys
 import urllib.error
 import urllib.request
 
+from .axi import E_ERR, E_NOTFOUND, E_OK, E_REFUSED, E_USAGE, die, emit
+from .axi import toon as _axi_toon
+
 BOARD = os.environ.get("MONDAY_BOARD", "18424958790")
 OP_REF = os.environ.get("MONDAY_OP_REF", "op://Lobster/monday.com/API Key")
 SA = os.environ.get("MONDAY_SA", "Craig Smith")
 ENDPOINT = "https://api.monday.com/v2"
 API_VERSION = "2024-10"
-
-E_OK, E_ERR, E_USAGE, E_NOTFOUND, E_REFUSED = 0, 1, 2, 3, 4
 
 # Column ids are resolved live from the board, so a board edit cannot rot them.
 WANT = {"people": "people", "date": "date", "status": "status",
@@ -39,11 +40,6 @@ WANT = {"people": "people", "date": "date", "status": "status",
 
 
 # ── transport ──────────────────────────────────────────────────────────────
-def die(msg: str, code: int) -> None:
-    print(f"error: {msg}", file=sys.stderr)
-    sys.exit(code)
-
-
 def token() -> str:
     t = os.environ.get("MONDAY_TOKEN")
     if t:
@@ -145,18 +141,11 @@ def only_mine(items: list[dict]) -> list[dict]:
 
 
 # ── output ─────────────────────────────────────────────────────────────────
-def cell(v: object) -> str:
-    s = str(v or "").replace("\n", " ").strip() or "-"
-    return f'"{s}"' if ("," in s or '"' in s) else s
-
-
+# Every call site here still hands rows as parallel lists (id, date, status, ...)
+# rather than dicts; this adapter is the one place that zips them against
+# `fields` before handing off to the shared, correctly-quoting encoder.
 def toon(name: str, rows: list[list], fields: list[str]) -> None:
-    print(f"{name}[{len(rows)}]{{{','.join(fields)}}}:")
-    if not rows:
-        print("  (none)")
-        return
-    for r in rows:
-        print("  " + ",".join(cell(x) for x in r))
+    emit(_axi_toon(name, fields, [dict(zip(fields, r)) for r in rows]))
 
 
 def show_items(items: list[dict], label: str) -> None:
