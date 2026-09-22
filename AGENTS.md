@@ -58,9 +58,11 @@ structured exit codes (`E_OK/E_ERR/E_USAGE/E_NOTFOUND/E_REFUSED`, see README). T
 exception is `doctor`: probes must never call `die()` or raise — a broken connector is
 data to report, not a reason to crash.
 
-**Output** — TOON, via the shared `toon()`/`cell()` helpers: `name[N]{field,...}:` header,
-one row per line, `(none)` for empty. Every new verb that lists rows uses it rather than
-inventing another table format.
+**Output** — TOON, via a local `toon()` adapter over the shared encoder: `name[N]{field,...}:`
+header, one row per line, `(none)` on the header line for empty. Every new verb that lists
+rows uses it rather than inventing another table format. The exit codes, `die()` and the
+underlying encoder live in `monday_axi/axi.py`, vendored from craig-ai-tooling/axi-py —
+never edit that file here; see `make vendor-axi` in the Makefile.
 
 **Tests** — offline; the network layer (`gql`/`token`/`schema`) is monkeypatched. A PR that
 changes batch, dupes, or doctor logic adds or updates a `tests/` case.
